@@ -72,33 +72,18 @@
 ;; Private Functions
 ;; =======================================
 
-;; Get the next goal ID for a user
-(define-private (get-next-goal-id (user principal))
-  (default-to u1 (map-get? user-goal-count user))
-)
-
-;; Update the goal count for a user
-(define-private (update-user-goal-count (user principal))
-  (let
-    (
-      (current-count (get-next-goal-id user))
-    )
-    (map-set user-goal-count user (+ current-count u1))
-    current-count
-  )
-)
 
 ;; Check if user is authorized to modify a goal
-(define-private (is-goal-owner (user principal) (goal-id uint))
+(define-private (is-goal-owner (user principal) (commitment-id uint))
   (is-eq tx-sender user)
 )
 
 ;; Check if user is authorized as a witness for a goal
-(define-private (is-goal-witness (user principal) (goal-id uint))
+(define-private (is-goal-witness (user principal) (commitment-id uint))
   (let
     (
-      (goal-data (unwrap! (map-get? goals {user: user, goal-id: goal-id}) false))
-      (witness (get witness goal-data))
+      (goal-data (unwrap! (map-get? commitments {user: user, commitment-id: commitment-id}) false))
+      (witness (get validator goal-data))
     )
     (and
       (is-some witness)
@@ -123,7 +108,7 @@
 (define-read-only (get-goal (user principal) (goal-id uint))
   (let
     (
-      (goal-data (map-get? goals {user: user, goal-id: goal-id}))
+      (goal-data (map-get? commitments {user: user, commitment-id: goal-id}))
     )
     (if (is-some goal-data)
       (let
@@ -134,62 +119,62 @@
         (if (or 
               (is-eq privacy privacy-public)
               (is-eq tx-sender user)
-              (is-eq tx-sender (default-to contract-owner (get witness unwrapped-data)))
+              (is-eq tx-sender (default-to contract-owner (get validator unwrapped-data)))
             )
           (ok unwrapped-data)
           (err err-not-authorized)
         )
       )
-      (err err-no-such-goal)
+      (err err-no-such-commitment)
     )
   )
 )
 
 ;; Get milestone details
-(define-read-only (get-milestone (user principal) (goal-id uint) (milestone-id uint))
+(define-read-only (get-milestone (user principal) (commitment-id uint) (milestone-id uint))
   (let
     (
-      (goal-data (map-get? goals {user: user, goal-id: goal-id}))
+      (goal-data (map-get? commitments {user: user, commitment-id: commitment-id}))
     )
     (if (is-some goal-data)
       (let
         (
           (unwrapped-goal (unwrap-panic goal-data))
           (privacy (get privacy unwrapped-goal))
-          (milestone-data (map-get? milestones {user: user, goal-id: goal-id, milestone-id: milestone-id}))
+          (milestone-data (map-get? stages {user: user, commitment-id: commitment-id, stage-id: milestone-id}))
         )
         (if (and
               (is-some milestone-data)
               (or 
                 (is-eq privacy privacy-public)
                 (is-eq tx-sender user)
-                (is-eq tx-sender (default-to contract-owner (get witness unwrapped-goal)))
+                (is-eq tx-sender (default-to contract-owner (get validator unwrapped-goal)))
               )
             )
           (ok (unwrap-panic milestone-data))
           (if (is-none milestone-data)
-            (err err-no-such-milestone)
+            (err err-no-such-stage)
             (err err-not-authorized)
           )
         )
       )
-      (err err-no-such-goal)
+      (err err-no-such-commitment)
     )
   )
 )
 
 ;; Helper function to compose goal IDs
-(define-private (compose-goal-id (user principal) (id uint))
-  {user: user, goal-id: id}
+(define-private (compose-commitment-id (user principal) (id uint))
+  {user: user, commitment-id: id}
 )
 
 ;; Filter function to check if goal is accessible
-(define-private (is-accessible-goal (goal-map {user: principal, goal-id: uint}))
+(define-private (is-accessible-commitment (goal-map {user: principal, commitment-id: uint}))
   (let
     (
       (user (get user goal-map))
-      (goal-id (get goal-id goal-map))
-      (goal-data (map-get? goals {user: user, goal-id: goal-id}))
+      (goal-id (get commitment-id goal-map))
+      (goal-data (map-get? commitments {user: user, commitment-id: goal-id}))
     )
     (if (is-some goal-data)
       (let
@@ -200,7 +185,7 @@
         (or 
           (is-eq privacy privacy-public)
           (is-eq tx-sender user)
-          (is-eq tx-sender (default-to contract-owner (get witness unwrapped-data)))
+          (is-eq tx-sender (default-to contract-owner (get validator unwrapped-data)))
         )
       )
       false
@@ -214,42 +199,20 @@
 
 
 ;; Update goal privacy setting
-(define-public (update-goal-privacy (goal-id uint) (privacy uint))
+(define-public (update-goal-privacy (commitment-id uint) (privacy uint))
   (let
     (
       (user tx-sender)
-      (goal-data (unwrap! (map-get? goals {user: user, goal-id: goal-id}) (err err-no-such-goal)))
+      (goal-data (unwrap! (map-get? commitments {user: user, commitment-id: commitment-id}) (err err-no-such-commitment)))
     )
     ;; Validate
-    (asserts! (is-goal-owner user goal-id) (err err-not-authorized))
+    (asserts! (is-goal-owner user commitment-id) (err err-not-authorized))
     (asserts! (validate-privacy privacy) (err err-invalid-privacy-setting))
     
     ;; Update privacy setting
-    (map-set goals
-      {user: user, goal-id: goal-id}
+    (map-set commitments
+      {user: user, commitment-id: commitment-id}
       (merge goal-data {privacy: privacy})
-    )
-    
-    (ok true)
-  )
-)
-
-;; Add or change witness for a goal
-(define-public (update-goal-witness (goal-id uint) (witness (optional principal)))
-  (let
-    (
-      (user tx-sender)
-      (goal-data (unwrap! (map-get? goals {user: user, goal-id: goal-id}) (err err-no-such-goal)))
-      (completed-at (get completed-at goal-data))
-    )
-    ;; Validate
-    (asserts! (is-goal-owner user goal-id) (err err-not-authorized))
-    (asserts! (is-none completed-at) (err err-goal-completed))
-    
-    ;; Update witness
-    (map-set goals
-      {user: user, goal-id: goal-id}
-      (merge goal-data {witness: witness})
     )
     
     (ok true)
